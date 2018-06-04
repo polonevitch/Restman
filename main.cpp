@@ -8,6 +8,9 @@
 #include <mutex>
 #include <thread>
 #include <sstream>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
 
 using namespace std;
 
@@ -109,15 +112,22 @@ void statParser(int socket_fd, vector<ssPort>* ssPorts)
     vector<bool> activePorts(portCount);
     char buf[1024*100];
 
+    int n = 0;
 
     while(!stop)
     {
         memset(buf, 0, sizeof(buf));
         fill(activePorts.begin(), activePorts.end(), false);
+
         //GetSock from stat
+        n = recv(socket_fd, buf, sizeof(buf), 0);
+        if (n <= 0)
+            continue;
+
+        cout << buf << endl;
 
         //Parse
-        istringstream iss(string(buf, sizeof(buf)));
+        istringstream iss(string(buf, n));
         string item;
         while (getline(iss, item, delim))
             if(item.back()!=mark)
@@ -152,11 +162,53 @@ void statParser(int socket_fd, vector<ssPort>* ssPorts)
     }
 }
 
+int socketInit(char* serverManagerSocket)
+{
+    const char* server_filename = serverManagerSocket;
+    const char* client_filename = "./ssMan.sock";
+
+    struct sockaddr_un server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sun_family = AF_UNIX;
+    strncpy(server_addr.sun_path, server_filename, strlen(server_filename));
+
+    struct sockaddr_un client_addr;
+    memset(&client_addr, 0, sizeof(client_addr));
+    client_addr.sun_family = AF_UNIX;
+    strncpy(client_addr.sun_path, client_filename, strlen(client_filename));
+    client_addr.sun_path[0] = '\0';
+
+    int sockfd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sockfd < 0)
+        return -1;
+
+    struct timeval tv;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+    if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) < 0)
+        return -2;
+
+    unlink(client_filename);
+
+    if(bind(sockfd, (struct sockaddr *) &client_addr, sizeof(client_addr)) < 0)
+        return -3;
+
+    if(connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0)
+        return -4;
+
+    return sockfd;
+}
+
 int main(int argc, char* argv[])
 {
     signal(SIGINT, inthand);
 
-    uint16_t portMin = 10, portMax = 20;
+    uint16_t portMin = 8380, portMax = 8390;
+    char server_filename[] = "/tmp/man2Sock.sock";
+
+    int serverManagerSock = socketInit(server_filename);
+    if(serverManagerSock < 0)
+        return -5;
 
     deque<uint16_t> availablePorts;
     for (uint16_t p = portMin; p < portMax; p++)
@@ -171,19 +223,21 @@ int main(int argc, char* argv[])
     for (uint16_t p = 0; p < pn; p++)
         serverPorts.at(p).portNum = portMin + p;
 
-    //Connect to socket
 
     queue<ssPort> addQueue;
     queue<ssPort> remQueue;
 
     thread vanisher(cleaner, 1000, &remQueue, &serverPorts, &availablePorts);
-    thread activator(statParser, dup(1), &serverPorts);
+    thread activator(statParser, dup(serverManagerSock), &serverPorts);
 
     struct MHD_Daemon *restDaemon;
 
     restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, 8888, NULL, NULL, &answer_to_connection, NULL, MHD_OPTION_END);
     if (NULL == restDaemon)
         return 0;
+
+    const char handshake[] = "ping";
+    send(serverManagerSock, handshake, strlen(handshake), 0);
 
     while (!stop)
     {
@@ -219,6 +273,8 @@ int main(int argc, char* argv[])
 
     vanisher.join();
     activator.join();
+
+    close(serverManagerSock);
 
     return 0;
 }
