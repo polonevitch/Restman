@@ -11,9 +11,12 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include "json.hpp"
 
 using namespace std;
 
+const char VER[] = "ver 1";
+const char ADD_PATH[] = "/v1/add";
 const int PASS_LEN = 10;
 
 volatile sig_atomic_t stop;
@@ -21,6 +24,7 @@ volatile sig_atomic_t stop;
 uint16_t balancer = 0;
 
 enum  portStatus {unused, active, inactive};
+
 
 struct ssPort
 {
@@ -34,6 +38,11 @@ struct ssPort
 };
 
 mutex collisionPrev;
+
+struct connectionInfo
+{
+    vector<char> data;
+};
 
 void genPass(char *s, const int len)
 {
@@ -86,19 +95,119 @@ void cleaner(uint32_t timeout, queue<ssPort>* scedRemQ, vector<ssPort>* ssPorts,
         }
 }
 
+int codeResponce(MHD_Connection *connection, unsigned int status_code)
+{
+    MHD_Response *response = MHD_create_response_from_buffer(0, NULL, MHD_RESPMEM_PERSISTENT);
+    int ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static int respondRequest(MHD_Connection *connection, connectionInfo* info, void* params)
+{
+    nlohmann::json jObj;
+    jObj = nlohmann::json::parse(info->data.data(), nullptr, false);
+    if (jObj.is_object())
+        return MHD_NO;
+
+    cout << "request" << endl;
+    cout << jObj.dump() << endl;
+
+    bool uValid = true;
+    //Check server database with curl, if the user valid
+    if(!uValid)
+        return codeResponce(connection, MHD_HTTP_UNAUTHORIZED);
+
+    tuple<deque<uint16_t>*, queue<ssPort>*, vector<ssPort>*>* parameters = static_cast<tuple<deque<uint16_t>*, queue<ssPort>*, vector<ssPort>*>*>(params);
+    deque<uint16_t>* availablePorts = get<0>(*parameters);
+    queue<ssPort>* addQueue         = get<1>(*parameters);
+    vector<ssPort>* serverPorts     = get<2>(*parameters);
+
+    bool overloaded = availablePorts->empty();
+
+    char sessionKey[PASS_LEN];
+    genPass(sessionKey, PASS_LEN);
+
+    jObj.clear();
+    ssPort newPort;
+
+    collisionPrev.lock();
+        newPort.portNum = availablePorts->front();
+        availablePorts->pop_front();
+        memcpy(newPort.key, sessionKey, PASS_LEN);
+        addQueue->push(newPort);
+    collisionPrev.unlock();
+
+    jObj["port"] = newPort.portNum;
+    jObj["key"] = newPort.key;
+
+    cout << "responce" << endl;
+    cout << jObj.dump() << endl;
+
+
+    //void* ssp = get<0>(parameters);
+
+ /*
+    bool res = _procRequest(info);
+
+
+    dbRollback((char *)me);
+
+    if (!res)
+        return MHD_NO;
+
+    MHD_Response *response = MHD_create_response_from_buffer(info->outMessage.body.size() * sizeof(char), info->outMessage.body.data(), MHD_RESPMEM_PERSISTENT);
+    std::for_each(info->outMessage.header.begin(), info->outMessage.header.end(),
+      [response](const std::pair<string, string>& p) {
+        MHD_add_response_header (response, p.first.c_str(), p.second.c_str());
+      }
+    );
+    int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;*/
+    return MHD_YES;
+}
+
 static int answer_to_connection (void *cls, struct MHD_Connection *connection,
                       const char *url, const char *method,
                       const char *version, const char *upload_data,
                       size_t *upload_data_size, void **con_cls)
 {
-  struct MHD_Response *response;
-  int ret;
 
-  response = MHD_create_response_from_buffer (0, NULL, MHD_RESPMEM_PERSISTENT);
-  ret = MHD_queue_response (connection, MHD_HTTP_OK, response );
-  MHD_destroy_response (response);
+    if(!strcmp(method, MHD_HTTP_METHOD_POST) == 0)
+        return codeResponce(connection, MHD_HTTP_METHOD_NOT_ALLOWED);
 
-  return ret;
+    if(!strcmp(url, ADD_PATH) == 0)
+        return codeResponce(connection, MHD_HTTP_NOT_FOUND);
+
+
+    if (*con_cls == NULL)
+    {
+        *con_cls = new connectionInfo();
+        return MHD_YES;
+    }
+
+    connectionInfo* conInfo = static_cast<connectionInfo*>(*con_cls);
+
+    if (*upload_data_size != 0)
+    {
+        conInfo->data.insert(conInfo->data.end(), upload_data, upload_data+*upload_data_size);
+
+        *upload_data_size = 0;
+
+        return MHD_YES;
+    }
+
+    return respondRequest(connection, conInfo, cls);
+}
+
+static void request_completed (void *cls, struct MHD_Connection *connection,
+                   void **con_cls, enum MHD_RequestTerminationCode toe)
+{
+    connectionInfo* conInfo = static_cast<connectionInfo*>(*con_cls);
+
+    delete conInfo;
+    *con_cls = NULL;
 }
 
 void statParser(int socket_fd, vector<ssPort>* ssPorts)
@@ -201,14 +310,13 @@ int socketInit(char* serverManagerSocket)
 
 int main(int argc, char* argv[])
 {
+    cout << VER << endl;
+
     signal(SIGINT, inthand);
 
     uint16_t portMin = 8380, portMax = 8390;
-    char server_filename[] = "/tmp/man2Sock.sock";
+    char server_filename[] = "/tmp/man3Sock.sock";
 
-    int serverManagerSock = socketInit(server_filename);
-    if(serverManagerSock < 0)
-        return -5;
 
     deque<uint16_t> availablePorts;
     for (uint16_t p = portMin; p < portMax; p++)
@@ -216,8 +324,8 @@ int main(int argc, char* argv[])
 
 
     const int16_t pn = availablePorts.size();
-    if(pn <=0 )
-        return 0;
+    if(pn ==0 )
+        return -5;
 
     vector<ssPort> serverPorts(pn);
     for (uint16_t p = 0; p < pn; p++)
@@ -227,54 +335,73 @@ int main(int argc, char* argv[])
     queue<ssPort> addQueue;
     queue<ssPort> remQueue;
 
-    thread vanisher(cleaner, 1000, &remQueue, &serverPorts, &availablePorts);
-    thread activator(statParser, dup(serverManagerSock), &serverPorts);
+    int serverManagerSock = socketInit(server_filename);
+    if(serverManagerSock < 0)
+        return serverManagerSock;
+
+    tuple<deque<uint16_t>*, queue<ssPort>*, vector<ssPort>*> params = make_tuple(&availablePorts, &addQueue, &serverPorts);
 
     struct MHD_Daemon *restDaemon;
 
-    restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, 8888, NULL, NULL, &answer_to_connection, NULL, MHD_OPTION_END);
+    restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, 8888, NULL, NULL,
+                                   &answer_to_connection, &params,
+                                   MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
+                                   MHD_OPTION_END);
     if (NULL == restDaemon)
-        return 0;
+        return -6;
+
+    thread vanisher(cleaner, 1000, &remQueue, &serverPorts, &availablePorts);
+    thread activator(statParser, dup(serverManagerSock), &serverPorts);
 
     const char handshake[] = "ping";
     send(serverManagerSock, handshake, strlen(handshake), 0);
+
+    char commandBuf[100];
 
     while (!stop)
     {
         bool insomnia = false;
 
-        if(!addQueue.empty())
-        {
-            collisionPrev.lock();
-            //add
-            while(!addQueue.empty())
-                addQueue.pop();
-            collisionPrev.unlock();
-
-            insomnia = true;
-        }
-
         if(!remQueue.empty())
         {
             collisionPrev.lock();
-            //remove
             while(!remQueue.empty())
+            {
+                memset(commandBuf, 0, sizeof(commandBuf));
+                sprintf(commandBuf, "remove: {\"server_port\": %d}", remQueue.front().portNum);
+                cout << commandBuf << endl;
                 remQueue.pop();
+            }
             collisionPrev.unlock();
 
             insomnia = true;
         }
+
+        if(!addQueue.empty())
+        {
+            collisionPrev.lock();
+            while(!addQueue.empty())
+            {
+                memset(commandBuf, 0, sizeof(commandBuf));
+                sprintf(commandBuf, "add: {\"server_port\": %d, \"password\":\"%s\"}", addQueue.front().portNum, addQueue.front().key);
+                cout << commandBuf << endl;
+                addQueue.pop();
+            }
+            collisionPrev.unlock();
+
+            insomnia = true;
+        }
+
 
         if(!insomnia)
             usleep(100000);
     }
 
     MHD_stop_daemon (restDaemon);
-
-    vanisher.join();
     activator.join();
-
+    vanisher.join();
     close(serverManagerSock);
+
 
     return 0;
 }
