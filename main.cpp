@@ -367,7 +367,7 @@ int main(int argc, char* argv[])
     if (NULL == restDaemon)
         return -6;
 
-    thread vanisher(cleaner, 15, &remQueue, &serverPorts, &availablePorts);
+    thread vanisher(cleaner, 60, &remQueue, &serverPorts, &availablePorts);
     thread activator(statParser, dup(serverManagerSock), &serverPorts);
 
     const char handshake[] = "ping";
@@ -387,7 +387,7 @@ int main(int argc, char* argv[])
                 memset(commandBuf, 0, sizeof(commandBuf));
                 sprintf(commandBuf, "remove: {\"server_port\": %d}", remQueue.front().portNum);
                 cout << commandBuf << endl;
-                //send(serverManagerSock, commandBuf, strlen(commandBuf), 0);
+                send(serverManagerSock, commandBuf, strlen(commandBuf), 0);
                 remQueue.pop();
             }
             collisionPrev.unlock();
@@ -403,7 +403,7 @@ int main(int argc, char* argv[])
                 memset(commandBuf, 0, sizeof(commandBuf));
                 sprintf(commandBuf, "add: {\"server_port\": %d, \"password\":\"%s\"}", addQueue.front().portNum, addQueue.front().key.c_str());
                 cout << commandBuf << endl;
-                //send(serverManagerSock, commandBuf, strlen(commandBuf), 0);
+                send(serverManagerSock, commandBuf, strlen(commandBuf), 0);
                 addQueue.pop();
             }
             collisionPrev.unlock();
