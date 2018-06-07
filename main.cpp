@@ -331,9 +331,21 @@ int main(int argc, char* argv[])
 {
     cout << VER << endl;
     signal(SIGINT, inthand);
+    srand (time(NULL));
 
-    uint16_t portMin = 8380, portMax = 8390;
-    char server_filename[] = "/tmp/man4Sock.sock";
+   if(argc!=4)
+   {
+       cout << "usage:" << endl;
+       cout << argv[0] << " <ssserver manager socket> <min port> <max port>" << endl;
+       cout << "example:" << endl;
+       cout << argv[0] << " /tmp/manSock.sock 8380 8390" << endl;
+       cout << "local REST port: 8888" << endl;
+       return 0;
+   }
+
+    char* server_filename = argv[1];
+    uint16_t portMin = atoi(argv[2]);
+    uint16_t portMax = atoi(argv[3]);
 
 
     deque<uint16_t> availablePorts;
