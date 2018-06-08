@@ -23,6 +23,7 @@ static const char alphanum[] =
 const char VER[] = "ver. 1";
 const char ADD[] = "/v1/add";
 const char STAT[] = "/v1/stat";
+const char MAN_SOCK[] = "X./ssMan.sock";
 const int KEY_LEN = 10;
 
 volatile sig_atomic_t stop;
@@ -113,7 +114,7 @@ static int respondRequest(MHD_Connection *connection, void* params)
     queue<ssPort>* addQueue         = get<1>(*parameters);
     vector<ssPort>* serverPorts     = get<2>(*parameters);
 
-    const uint16_t minPort = serverPorts->at(0).portNum;
+    const uint16_t minPort = serverPorts->front().portNum;
     bool overloaded = availablePorts->empty();
 
     nlohmann::json jObj;
@@ -234,7 +235,8 @@ void statParser(int socket_fd, vector<ssPort>* ssPorts)
     const char delim = ':';
     const char mark = '"';
 
-    const uint16_t minPort = ssPorts->at(0).portNum;
+    const uint16_t minPort = ssPorts->front().portNum;
+    const uint16_t maxPort = ssPorts->back().portNum;
     const uint16_t portCount = ssPorts->size();
 
     vector<bool> activePorts(portCount);
@@ -272,6 +274,8 @@ void statParser(int socket_fd, vector<ssPort>* ssPorts)
                     {
                         string sub = item.substr(pos+1, item.length()-pos-2);
                         activePort = stoi(sub);
+                        if(activePort<minPort || activePort>maxPort)
+                            continue;
                         activePorts[activePort-minPort] = true;
                     }
                     catch(...)
@@ -293,7 +297,7 @@ void statParser(int socket_fd, vector<ssPort>* ssPorts)
 int socketInit(char* serverManagerSocket)
 {
     const char* server_filename = serverManagerSocket;
-    const char* client_filename = "./ssMan.sock";
+    const char* client_filename = MAN_SOCK;
 
     struct sockaddr_un server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
@@ -373,16 +377,16 @@ int main(int argc, char* argv[])
 
     struct MHD_Daemon *restDaemon;
 
-    restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, 8888, NULL, NULL,
+    restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, 8788, NULL, NULL,
                                    &answer_to_connection, &params,
                                    MHD_OPTION_END);
     if (NULL == restDaemon)
         return -6;
 
-    thread vanisher(cleaner, 60, &remQueue, &serverPorts, &availablePorts);
+    thread vanisher(cleaner, 1000, &remQueue, &serverPorts, &availablePorts);
     thread activator(statParser, dup(serverManagerSock), &serverPorts);
 
-    const char handshake[] = "ping";
+    const char handshake[] = "ping";;
     send(serverManagerSock, handshake, strlen(handshake), 0);
 
     char commandBuf[100];
