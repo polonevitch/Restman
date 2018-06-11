@@ -13,6 +13,10 @@
 #include <sys/un.h>
 #include "json.hpp"
 
+#define KNRM  "\x1B[0m"
+#define KRED  "\x1B[31m"
+#define KGRN  "\x1B[32m"
+
 using namespace std;
 
 static const char alphanum[] =
@@ -29,6 +33,7 @@ const int KEY_LEN = 10;
 volatile sig_atomic_t stop;
 
 uint16_t balancer = 0;
+bool verbose = false;
 
 enum  portStatus {unused, active, inactive};
 
@@ -150,7 +155,8 @@ static int respondRequest(MHD_Connection *connection, void* params)
     buffer << jObj.dump();
     string reply = buffer.str();
 
-    cout << reply << endl;
+    if(verbose)
+        cout << reply << endl;
 
     int sz = reply.length();
     void* m = malloc(sz);
@@ -254,7 +260,8 @@ void statParser(int socket_fd, vector<ssPort>* ssPorts)
         if (n <= 0)
             continue;
 
-        cout << buf << endl;
+        if(verbose)
+            cout << buf << endl;
 
         //Parse
         istringstream iss(string(buf, n));
@@ -331,19 +338,40 @@ int socketInit(char* serverManagerSocket)
     return sockfd;
 }
 
+void printEC()
+{
+    cout << "Exit codes:" << endl;
+    cout << "  0: OK." << endl;
+    cout << " -1: Socket create problem." << endl;
+    cout << " -2: Socket set options problem." << endl;
+    cout << " -3: Socket bind problem." << endl;
+    cout << " -4: Socket connect problem." << endl;
+    cout << " -5: Ports range problem." << endl;
+    cout << " -6: MHD daemon not started." << endl;
+}
+
+void printAPI()
+{
+    cout << "V1 API:" << endl;
+    cout << " Get ss-server load percentage: curl <IP>:<port>/v1/stat" << endl;
+    cout << " Get port and key for new user: curl <IP>:<port>/v1/add" << endl;
+    cout << " *user credentials expires after <timeout> seconds of inactivity" << endl;
+}
+
 int main(int argc, char* argv[])
 {
     cout << VER << endl;
     signal(SIGINT, inthand);
     srand (time(NULL));
 
-   if(argc!=4)
+   if((argc<4)||(argc>7))
    {
        cout << "usage:" << endl;
-       cout << argv[0] << " <ssserver manager socket> <min port> <max port>" << endl;
-       cout << "example:" << endl;
+       cout << KRED << argv[0] << " <ssserver manager socket> <min port> <max port> [<restMan port>] [<user timeout>] [-v]" << KNRM << endl;
+       cout << "example 1:" << endl;
        cout << argv[0] << " /tmp/manSock.sock 8380 8390" << endl;
-       cout << "local REST port: 8888" << endl;
+       cout << "example 2:" << endl;
+       cout << argv[0] << " /tmp/manSock.sock 8380 8390 8580 1000" << endl;
        return 0;
    }
 
@@ -351,6 +379,25 @@ int main(int argc, char* argv[])
     uint16_t portMin = atoi(argv[2]);
     uint16_t portMax = atoi(argv[3]);
 
+    uint16_t daemonPort = 8788;
+    uint32_t cleanTimeout = 1000;
+
+    if(argc>4)
+        daemonPort = atoi(argv[4]);
+    if(argc>5)
+        cleanTimeout = atoi(argv[5]);
+    if(argc>6)
+        if(strcmp(argv[6], "-v") == 0)
+            verbose = true;
+
+    if(verbose)
+    {
+        cout << endl;
+        printEC();
+        cout << endl;
+        printAPI();
+        cout << endl;
+    }
 
     deque<uint16_t> availablePorts;
     for (uint16_t p = portMin; p < portMax; p++)
@@ -377,16 +424,19 @@ int main(int argc, char* argv[])
 
     struct MHD_Daemon *restDaemon;
 
-    restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, 8788, NULL, NULL,
+    restDaemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, daemonPort, NULL, NULL,
                                    &answer_to_connection, &params,
                                    MHD_OPTION_END);
     if (NULL == restDaemon)
         return -6;
 
-    thread vanisher(cleaner, 1000, &remQueue, &serverPorts, &availablePorts);
+    thread vanisher(cleaner, cleanTimeout, &remQueue, &serverPorts, &availablePorts);
     thread activator(statParser, dup(serverManagerSock), &serverPorts);
 
-    const char handshake[] = "ping";;
+    if(verbose)
+        cout << KGRN << "REST listener started on port " << daemonPort << ". Cleanup timeout = " << cleanTimeout << "s." << KNRM << endl;
+
+    const char handshake[] = "ping";
     send(serverManagerSock, handshake, strlen(handshake), 0);
 
     char commandBuf[100];
@@ -402,7 +452,8 @@ int main(int argc, char* argv[])
             {
                 memset(commandBuf, 0, sizeof(commandBuf));
                 sprintf(commandBuf, "remove: {\"server_port\": %d}", remQueue.front().portNum);
-                cout << commandBuf << endl;
+                if(verbose)
+                    cout << commandBuf << endl;
                 send(serverManagerSock, commandBuf, strlen(commandBuf), 0);
                 remQueue.pop();
             }
@@ -418,7 +469,8 @@ int main(int argc, char* argv[])
             {
                 memset(commandBuf, 0, sizeof(commandBuf));
                 sprintf(commandBuf, "add: {\"server_port\": %d, \"password\":\"%s\"}", addQueue.front().portNum, addQueue.front().key.c_str());
-                cout << commandBuf << endl;
+                if(verbose)
+                    cout << commandBuf << endl;
                 send(serverManagerSock, commandBuf, strlen(commandBuf), 0);
                 addQueue.pop();
             }
